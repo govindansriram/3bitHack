@@ -11,6 +11,7 @@ evals/
   setup_server.sh   one-time GPU server setup: venv, vLLM, lm-eval, model download
   serve_vllm.sh     start a vLLM server for a checkpoint folder (port 8000)
   run_evals.py      run lm-evaluation-harness tasks against the server
+  run_variant.sh    serve one checkpoint, run evals against it, shut the server down
   qwen_api.py       lm-eval model: Qwen3 chat template + thinking on/off over /v1/completions
 scripts/
   sync.sh           push code to the server / pull results back
@@ -89,6 +90,13 @@ Each run writes `outputs/evals/<run-name>/summary.json` (scores, standard errors
 `samples_<task>.jsonl` (every prompt, model output and whether it was scored correct). lm-eval computes the
 scores; `run_evals.py` writes the files.
 
+To evaluate another checkpoint end to end (stop any running vLLM server first):
+
+```bash
+evals/run_variant.sh /workspace/models/Qwen3-30B-A3B-FP8 fp8_qwen \
+  --tasks wikitext mmlu arc_challenge gsm8k humaneval mbpp --full --thinking --allow-code-exec
+```
+
 ## Pull results back
 
 ```bash
@@ -138,6 +146,34 @@ lm-eval 0.4.13; results in `outputs/evals/bf16_golden/`.
 
 For gsm8k with thinking, read **math-extract**: the model answers in `$$\boxed{N}$$`, which the stock strict
 and flexible filters mis-score (flexible extracts `"$$"`).
+
+### Published quantized checkpoints vs BF16 (same settings as the golden)
+
+The reference points FP3 has to match on quality (and beat on speed). Both quantize activations as well as
+weights, so they are end-to-end targets rather than weight-only comparisons. Differences vs BF16 in brackets;
+± is BF16's standard error.
+
+| Task | Metric | BF16 | FP8 (Qwen) | NVFP4 (NVIDIA) |
+|---|---|---|---|---|
+| wikitext | perplexity ↓ | 11.16 | 11.19 (+0.02) | 11.73 (+0.56) |
+| mmlu | acc | 79.5 ±0.3 | 79.5 (-0.0) | 78.1 (-1.5) |
+| arc_challenge | acc_norm | 68.6 ±1.4 | 68.7 (+0.1) | 67.4 (-1.2) |
+| gsm8k | math-extract | 94.8 ±0.6 | 95.1 (+0.4) | 93.9 (-0.9) |
+| humaneval | pass@1 | 92.1 ±2.1 | 93.3 (+1.2) | 87.8 (-4.3) |
+| mbpp | pass@1 | 74.0 ±2.0 | 74.4 (+0.4) | 73.8 (-0.2) |
+
+| Checkpoint | Format | Weights in GPU memory | vLLM kernels | Results |
+|---|---|---|---|---|
+| BF16 | `Qwen/Qwen3-30B-A3B` | 57 GiB | FlashInfer TRT-LLM BF16 MoE | `outputs/evals/bf16_golden/` |
+| FP8 | `Qwen/Qwen3-30B-A3B-FP8`: block FP8 weights, dynamic FP8 activations (W8A8) | 29.1 GiB | FlashInfer TRT-LLM FP8 MoE | `outputs/evals/fp8_qwen/` |
+| NVFP4 | `nvidia/Qwen3-30B-A3B-NVFP4`: NVFP4 weights and activations (W4A4), FP8 KV cache | 16.9 GiB | FlashInfer NVFP4 GEMM + TRT-LLM NVFP4 MoE | `outputs/evals/nvfp4_nvidia/` |
+
+- **FP8** is indistinguishable from BF16: every difference is within noise.
+- **NVFP4** loses a little everywhere: +5% perplexity, -1.5 MMLU (well outside MMLU's ±0.3), -4.3 HumanEval
+  (about 2 standard errors). Its checkpoint has no KV-cache scales, so vLLM uses a scale of 1.0 for the FP8 KV
+  cache, which may account for part of the loss.
+- Eval wall-clock times are not a speed measurement (lm-eval's request pattern dominates them); speed needs
+  a dedicated throughput/latency benchmark.
 
 ## Notes: what to measure for 3-bit work
 
