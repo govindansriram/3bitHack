@@ -118,62 +118,31 @@ curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/jso
 
 ## Results
 
-### BF16 quick baseline (thinking off)
+### Full test sets, thinking on
 
-Run before the gsm8k fix, so gsm8k here is the stock task (no math-extract); with thinking off the model uses
-the `####` format, which the stock filters score correctly.
-
-| Task | Score | ± | Questions |
-|---|---|---|---|
-| wikitext | word perplexity 11.16 | | 62 docs |
-| mmlu (5-shot) | 81.1% | 1.1 | 1,140 |
-| arc_challenge (25-shot) | 67.7% (acc_norm 67.0%) | 2.7 | 300 |
-| gsm8k (5-shot) | 92.0% flexible / 90.4% strict | 1.7 | 250 |
-
-### BF16 golden (full test sets, thinking on)
-
-The reference every quantized variant is compared against. Run on a RunPod B200 with vLLM 0.34.0 and
-lm-eval 0.4.13; results in `outputs/evals/bf16_golden/`.
-
-| Task | Score | ± | Questions | Thinking | Time |
+| Task | Metric | Questions | BF16 | FP8 (Qwen) | NVFP4 (NVIDIA) |
 |---|---|---|---|---|---|
-| wikitext | word perplexity 11.16 | | 62 docs | n/a | 32 s |
-| mmlu (5-shot) | 79.5% | 0.3 | 14,042 | n/a | 19 min |
-| arc_challenge (25-shot) | 65.9% (acc_norm 68.6%) | 1.4 | 1,172 | n/a | 2 min |
-| gsm8k (5-shot) | 94.8% math-extract (89.8% flexible, 78.9% strict) | 0.6 | 1,319 | on | 3 min |
-| humaneval | 92.1% pass@1 | 2.1 | 164 | off (prefilled) | 26 s |
-| mbpp | 74.0% pass@1 | 2.0 | 500 | off (prefilled) | 71 s |
+| wikitext | word perplexity ↓ | 62 docs | 11.16 | 11.19 (+0.02) | 11.73 (+0.56) |
+| mmlu (5-shot) | acc | 14,042 | 79.5 ±0.3 | 79.5 (-0.0) | 78.1 (-1.5) |
+| arc_challenge (25-shot) | acc_norm | 1,172 | 68.6 ±1.4 | 68.7 (+0.1) | 67.4 (-1.2) |
+| gsm8k (5-shot, thinking) | math-extract | 1,319 | 94.8 ±0.6 | 95.1 (+0.4) | 93.9 (-0.9) |
+| humaneval | pass@1 | 164 | 92.1 ±2.1 | 93.3 (+1.2) | 87.8 (-4.3) |
+| mbpp | pass@1 | 500 | 74.0 ±2.0 | 74.4 (+0.4) | 73.8 (-0.2) |
 
-For gsm8k with thinking, read **math-extract**: the model answers in `$$\boxed{N}$$`, which the stock strict
-and flexible filters mis-score (flexible extracts `"$$"`).
+| Checkpoint | Model | Weights | Activations | KV cache | Weights in GPU memory | vLLM MoE kernel | Results |
+|---|---|---|---|---|---|---|---|
+| BF16 | `Qwen/Qwen3-30B-A3B` | BF16 | BF16 | BF16 | 57 GiB | FlashInfer TRT-LLM BF16 | `outputs/evals/bf16_golden/` |
+| FP8 | `Qwen/Qwen3-30B-A3B-FP8` | FP8, 128×128 blocks | FP8, dynamic | BF16 | 29.1 GiB | FlashInfer TRT-LLM FP8 | `outputs/evals/fp8_qwen/` |
+| NVFP4 | `nvidia/Qwen3-30B-A3B-NVFP4` | NVFP4, 16-blocks | NVFP4 | FP8, scale 1.0 | 16.9 GiB | FlashInfer TRT-LLM NVFP4 | `outputs/evals/nvfp4_nvidia/` |
 
-### Published quantized checkpoints vs BF16 (same settings as the golden)
+### BF16 quick baseline (subsets, thinking off)
 
-The reference points FP3 has to match on quality (and beat on speed). Both quantize activations as well as
-weights, so they are end-to-end targets rather than weight-only comparisons. Differences vs BF16 in brackets;
-± is BF16's standard error.
-
-| Task | Metric | BF16 | FP8 (Qwen) | NVFP4 (NVIDIA) |
-|---|---|---|---|---|
-| wikitext | perplexity ↓ | 11.16 | 11.19 (+0.02) | 11.73 (+0.56) |
-| mmlu | acc | 79.5 ±0.3 | 79.5 (-0.0) | 78.1 (-1.5) |
-| arc_challenge | acc_norm | 68.6 ±1.4 | 68.7 (+0.1) | 67.4 (-1.2) |
-| gsm8k | math-extract | 94.8 ±0.6 | 95.1 (+0.4) | 93.9 (-0.9) |
-| humaneval | pass@1 | 92.1 ±2.1 | 93.3 (+1.2) | 87.8 (-4.3) |
-| mbpp | pass@1 | 74.0 ±2.0 | 74.4 (+0.4) | 73.8 (-0.2) |
-
-| Checkpoint | Format | Weights in GPU memory | vLLM kernels | Results |
-|---|---|---|---|---|
-| BF16 | `Qwen/Qwen3-30B-A3B` | 57 GiB | FlashInfer TRT-LLM BF16 MoE | `outputs/evals/bf16_golden/` |
-| FP8 | `Qwen/Qwen3-30B-A3B-FP8`: block FP8 weights, dynamic FP8 activations (W8A8) | 29.1 GiB | FlashInfer TRT-LLM FP8 MoE | `outputs/evals/fp8_qwen/` |
-| NVFP4 | `nvidia/Qwen3-30B-A3B-NVFP4`: NVFP4 weights and activations (W4A4), FP8 KV cache | 16.9 GiB | FlashInfer NVFP4 GEMM + TRT-LLM NVFP4 MoE | `outputs/evals/nvfp4_nvidia/` |
-
-- **FP8** is indistinguishable from BF16: every difference is within noise.
-- **NVFP4** loses a little everywhere: +5% perplexity, -1.5 MMLU (well outside MMLU's ±0.3), -4.3 HumanEval
-  (about 2 standard errors). Its checkpoint has no KV-cache scales, so vLLM uses a scale of 1.0 for the FP8 KV
-  cache, which may account for part of the loss.
-- Eval wall-clock times are not a speed measurement (lm-eval's request pattern dominates them); speed needs
-  a dedicated throughput/latency benchmark.
+| Task | Metric | Questions | BF16 |
+|---|---|---|---|
+| wikitext | word perplexity ↓ | 62 docs | 11.16 |
+| mmlu (5-shot) | acc | 1,140 | 81.1 ±1.1 |
+| arc_challenge (25-shot) | acc_norm | 300 | 67.0 ±2.7 |
+| gsm8k (5-shot) | flexible-extract | 250 | 92.0 ±1.7 |
 
 ## Notes: what to measure for 3-bit work
 
